@@ -16,12 +16,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from scrapers import madrid_ayuntamiento
+from scrapers import ambilamp, madrid_ayuntamiento
 
 OUTPUT = Path(__file__).parent / "output"
 
 FUENTES = {
     "madrid": madrid_ayuntamiento.scrape,
+    "ambilamp": ambilamp.scrape,
 }
 
 

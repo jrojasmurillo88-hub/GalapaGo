@@ -150,6 +150,21 @@ def _cargar_fuente(conn, fuente: str, puntos: list[dict], archivo: str,
     return stats
 
 
+def asignar_distritos(conn) -> int:
+    """Puntos de Madrid ciudad sin distrito (fuentes que no lo traen): toma el del
+    punto oficial con distrito más cercano, si está a menos de 1,5 km. Aproximado
+    en los bordes entre distritos; se puede corregir a mano."""
+    return conn.execute("""
+        UPDATE puntos p SET distrito_id = (
+            SELECT o.distrito_id FROM puntos o
+            WHERE o.distrito_id IS NOT NULL AND o.fuente LIKE 'datos.madrid.es/%%'
+              AND ST_DWithin(o.coordenadas, p.coordenadas, 1500)
+            ORDER BY o.coordenadas <-> p.coordenadas LIMIT 1
+        )
+        WHERE p.distrito_id IS NULL AND p.municipio = 'Madrid' AND p.coordenadas IS NOT NULL
+    """).rowcount
+
+
 def marcar_duplicados(conn) -> int:
     """Mismo tipo de punto, fuentes distintas, a menos de RADIO_DUPLICADO_M metros:
     se queda el de más confianza (verificado > coords oficiales > id más antiguo)."""
@@ -198,6 +213,7 @@ def main():
                     print(f"  {fuente:<26} leídos {s['leidos']:>5} · nuevos {s['nuevos']:>5} · "
                           f"actualizados {s['actualizados']:>5} · cerrados {s['desactivados']:>3} · "
                           f"horarios {s['horarios']:>5}")
+            print(f"Distritos asignados por cercanía: {asignar_distritos(conn)}")
             print(f"Duplicados marcados: {marcar_duplicados(conn)}")
     print("Carga completada.")
 

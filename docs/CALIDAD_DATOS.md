@@ -1,13 +1,14 @@
 # Calidad de datos
 
-_Generado con `python db/calidad.py` el 13/10/2026 15:17. No editar a mano._
+_Generado con `python db/calidad.py` el 13/10/2026 15:22. No editar a mano._
 
-**2045 puntos** en la BD. Visibles en la app: no cerrados, no duplicados, con coordenadas.
+**3234 puntos** en la BD. Visibles en la app: no cerrados, no duplicados, con coordenadas.
 
 ## Por fuente y tipo
 
 | Fuente | Tipo | Puntos | Cerrados | Duplicados | Última carga |
 |---|---|---|---|---|---|
+| ambilamp-arcgis | contenedor_scrap | 1189 | 0 | 0 | 2026-10-13 |
 | datos.madrid.es/200284 | punto_limpio_fijo | 16 | 0 | 0 | 2026-10-13 |
 | datos.madrid.es/300198 | punto_limpio_proximidad | 95 | 0 | 0 | 2026-10-13 |
 | datos.madrid.es/300384 | contenedor_pilas | 400 | 0 | 0 | 2026-10-13 |
@@ -18,27 +19,28 @@ _Generado con `python db/calidad.py` el 13/10/2026 15:17. No editar a mano._
 
 | Distrito | Fijo | Proximidad | Móvil | Tienda | Contenedor SCRAP | Pilas | Total |
 |---|---|---|---|---|---|---|---|
-| Centro | 0 | 9 | 1 | 0 | 0 | 63 | 73 |
-| Arganzuela | 1 | 4 | 0 | 0 | 0 | 81 | 86 |
-| Retiro | 0 | 6 | 0 | 0 | 0 | 74 | 80 |
-| Salamanca | 0 | 6 | 0 | 0 | 0 | 110 | 116 |
-| Chamartín | 1 | 5 | 1 | 0 | 0 | 99 | 106 |
-| Tetuán | 0 | 6 | 1 | 0 | 0 | 67 | 74 |
-| Chamberí | 0 | 6 | 0 | 0 | 0 | 93 | 99 |
-| Fuencarral-El Pardo | 1 | 4 | 6 | 0 | 0 | 145 | 156 |
-| Moncloa-Aravaca | 1 | 5 | 1 | 0 | 0 | 82 | 89 |
-| Latina | 1 | 3 | 1 | 0 | 0 | 143 | 148 |
-| Carabanchel | 1 | 4 | 3 | 0 | 0 | 139 | 147 |
-| Usera | 1 | 3 | 2 | 0 | 0 | 72 | 78 |
-| Puente de Vallecas | 1 | 3 | 3 | 0 | 0 | 150 | 157 |
-| Moratalaz | 1 | 3 | 0 | 0 | 0 | 76 | 80 |
-| Ciudad Lineal | 1 | 3 | 2 | 0 | 0 | 127 | 133 |
-| Hortaleza | 1 | 6 | 7 | 0 | 0 | 109 | 123 |
-| Villaverde | 1 | 4 | 4 | 0 | 0 | 66 | 75 |
-| Villa de Vallecas | 1 | 5 | 3 | 0 | 0 | 55 | 64 |
-| Vicálvaro | 1 | 3 | 5 | 0 | 0 | 36 | 45 |
-| San Blas-Canillejas | 1 | 4 | 1 | 0 | 0 | 75 | 81 |
-| Barajas | 1 | 3 | 1 | 0 | 0 | 27 | 32 |
+| Centro | 0 | 9 | 1 | 0 | 23 | 63 | 96 |
+| Arganzuela | 1 | 4 | 0 | 0 | 33 | 81 | 119 |
+| Retiro | 0 | 6 | 0 | 0 | 17 | 74 | 97 |
+| Salamanca | 0 | 6 | 0 | 0 | 46 | 110 | 162 |
+| Chamartín | 1 | 5 | 1 | 0 | 31 | 99 | 137 |
+| Tetuán | 0 | 6 | 1 | 0 | 37 | 67 | 111 |
+| Chamberí | 0 | 6 | 0 | 0 | 36 | 93 | 135 |
+| Fuencarral-El Pardo | 1 | 4 | 6 | 0 | 30 | 145 | 186 |
+| Moncloa-Aravaca | 1 | 5 | 1 | 0 | 17 | 82 | 106 |
+| Latina | 1 | 3 | 1 | 0 | 36 | 143 | 184 |
+| Carabanchel | 1 | 4 | 3 | 0 | 41 | 139 | 188 |
+| Usera | 1 | 3 | 2 | 0 | 19 | 72 | 97 |
+| Puente de Vallecas | 1 | 3 | 3 | 0 | 34 | 150 | 191 |
+| Moratalaz | 1 | 3 | 0 | 0 | 13 | 76 | 93 |
+| Ciudad Lineal | 1 | 3 | 2 | 0 | 38 | 127 | 171 |
+| Hortaleza | 1 | 6 | 7 | 0 | 27 | 109 | 150 |
+| Villaverde | 1 | 4 | 4 | 0 | 19 | 66 | 94 |
+| Villa de Vallecas | 1 | 5 | 3 | 0 | 14 | 55 | 78 |
+| Vicálvaro | 1 | 3 | 5 | 0 | 9 | 36 | 54 |
+| San Blas-Canillejas | 1 | 4 | 1 | 0 | 23 | 75 | 104 |
+| Barajas | 1 | 3 | 1 | 0 | 5 | 27 | 37 |
+| (fuera de Madrid ciudad) | 0 | 0 | 0 | 0 | 641 | 0 | 641 |
 
 ## Duplicados fusionados (3)
 
@@ -50,28 +52,46 @@ Mismo tipo de punto, fuentes distintas, a menos de 15 m. Se oculta el duplicado.
 | 1759 | datos.madrid.es/900003 | Contenedor de pilas (marquesina de autobús) | 445 | datos.madrid.es/300384 | 13 |
 | 1864 | datos.madrid.es/900003 | Contenedor de pilas (marquesina de autobús) | 221 | datos.madrid.es/300384 | 10 |
 
-## Para revisar a mano (6)
+## Verificación por fuente
+
+Los datos oficiales del Ayuntamiento entran como `activo`; el resto como `pendiente_verificar` hasta que alguien los compruebe.
+
+| Fuente | Estado | Coordenadas | Puntos |
+|---|---|---|---|
+| ambilamp-arcgis | pendiente_verificar | de la fuente / geocodificadas | 1189 |
+| datos.madrid.es/200284 | activo | oficiales | 16 |
+| datos.madrid.es/300198 | activo | oficiales | 95 |
+| datos.madrid.es/300384 | activo | oficiales | 400 |
+| datos.madrid.es/900003 | activo | oficiales | 1489 |
+| datos.madrid.es/900026 | activo | oficiales | 42 |
+
+## Para revisar a mano (11)
 
 | Id | Tipo | Nombre | Distrito | Motivo | Horario (fuente) |
 |---|---|---|---|---|---|
+| 36 | punto_limpio_proximidad | Centro Municipal de Mayores Manuel Alexandre | Ciudad Lineal | horario parcial | Invierno de 9:00 a 21:00. Verano de 9:00 a 21:00. |
 | 48 | punto_limpio_proximidad | Centro Cultural Fernando de los Ríos | Latina | horario parcial | Lunes a viernes de 9:00 a 14:00 y de 16:00 a 18:00. Julio de lunes a v |
+| 63 | punto_limpio_proximidad | Parque Eva Duarte | Salamanca | horario parcial | de 7:00 a 24:00 horas. |
 | 69 | punto_limpio_proximidad | Centro Cultural Eduardo Úrculo | Tetuán | horario parcial | Lunes a viernes, de 9:30 a 13:30. Lunes a jueves 16:30 a 18:00. Julio  |
 | 70 | punto_limpio_proximidad | Biblioteca Municipal "Manuel Vázquez Montalbán" | Tetuán | horario parcial | Lunes a viernes de 9:30 a 14:00 y de 15:30 a 20:00. Del 15 de junio al |
 | 84 | punto_limpio_proximidad | Centro Socio-Cultural Marconi (Acceso a Colonia Marconi, 4) | Villaverde | horario parcial | Lunes a jueves de 9:30 a 13:30 y de 16:30 a 19:30. Viernes de 9:30 a 1 |
-| 36 | punto_limpio_proximidad | Centro Municipal de Mayores Manuel Alexandre | Ciudad Lineal | horario sin estructurar | Invierno de 9:00 a 21:00. Verano de 9:00 a 21:00. |
-| 63 | punto_limpio_proximidad | Parque Eva Duarte | Salamanca | horario sin estructurar | de 7:00 a 24:00 horas. |
+| 10332 | contenedor_scrap | Ahorramas 1059 |  | sin distrito | Horario del comercio |
+| 10362 | contenedor_scrap | Foreverled |  | sin distrito | Horario del comercio |
+| 10423 | contenedor_scrap | Ahorramas 1364 |  | sin distrito | Horario del comercio |
+| 10524 | contenedor_scrap | Ahorramas 1072 |  | sin distrito | Horario del comercio |
+| 10528 | contenedor_scrap | Ceis Sl Centro De Ensayos Innovacion Y Servicios |  | sin distrito | Horario del comercio |
 
 ## Últimas cargas
 
 | Fuente | Inicio | Leídos | Nuevos | Actualizados | Cerrados | Error |
 |---|---|---|---|---|---|---|
+| datos.madrid.es/900026 | 2026-10-13 13:21:55 | 42 | 0 | 42 | 0 |  |
+| datos.madrid.es/900003 | 2026-10-13 13:21:55 | 1492 | 0 | 1492 | 0 |  |
+| datos.madrid.es/300384 | 2026-10-13 13:21:55 | 400 | 0 | 400 | 0 |  |
+| datos.madrid.es/300198 | 2026-10-13 13:21:55 | 95 | 0 | 95 | 0 |  |
+| datos.madrid.es/200284 | 2026-10-13 13:21:55 | 16 | 0 | 16 | 0 |  |
+| ambilamp-arcgis | 2026-10-13 13:21:55 | 1192 | 1189 | 3 | 0 |  |
 | datos.madrid.es/900026 | 2026-10-13 13:17:12 | 42 | 0 | 42 | 0 |  |
 | datos.madrid.es/900003 | 2026-10-13 13:17:12 | 1492 | 0 | 1492 | 0 |  |
 | datos.madrid.es/300384 | 2026-10-13 13:17:12 | 400 | 0 | 400 | 0 |  |
 | datos.madrid.es/300198 | 2026-10-13 13:17:12 | 95 | 0 | 95 | 0 |  |
-| datos.madrid.es/200284 | 2026-10-13 13:17:12 | 16 | 0 | 16 | 0 |  |
-| datos.madrid.es/900026 | 2026-10-13 13:16:52 | 42 | 0 | 42 | 0 |  |
-| datos.madrid.es/900003 | 2026-10-13 13:16:52 | 1492 | 0 | 1492 | 0 |  |
-| datos.madrid.es/300384 | 2026-10-13 13:16:52 | 400 | 0 | 400 | 0 |  |
-| datos.madrid.es/300198 | 2026-10-13 13:16:52 | 95 | 0 | 95 | 0 |  |
-| datos.madrid.es/200284 | 2026-10-13 13:16:52 | 16 | 0 | 16 | 0 |  |

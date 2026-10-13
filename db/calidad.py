@@ -46,21 +46,28 @@ def main():
                    ROUND(ST_Distance(d.coordenadas, o.coordenadas))::int
             FROM puntos d JOIN puntos o ON o.id = d.duplicado_de ORDER BY d.id""")
 
+        verificacion = q("""
+            SELECT fuente, estado,
+                   CASE confianza_coords WHEN 0 THEN 'sin coords' WHEN 1 THEN 'de la fuente / geocodificadas'
+                        WHEN 2 THEN 'oficiales' ELSE 'verificadas a mano' END,
+                   COUNT(*)
+            FROM puntos WHERE duplicado_de IS NULL GROUP BY 1, 2, 3 ORDER BY 1, 2, 3""")
+
+        # Problemas concretos, punto a punto (los "pendiente de verificar" van en el resumen)
         revisar = q("""
             SELECT p.id, p.tipo_punto, p.nombre, d.nombre,
                    CASE WHEN p.coordenadas IS NULL THEN 'sin coordenadas'
-                        WHEN p.confianza_coords = 1 THEN 'coordenadas geocodificadas'
-                        WHEN NOT EXISTS (SELECT 1 FROM horarios_punto h WHERE h.punto_id = p.id)
-                             THEN 'horario sin estructurar'
+                        WHEN p.distrito_id IS NULL AND p.municipio = 'Madrid' THEN 'sin distrito'
                         WHEN p.notas LIKE 'horario estructurado parcial%%' THEN 'horario parcial'
-                        WHEN p.estado = 'pendiente_verificar' THEN 'pendiente de verificar' END,
-                   REPLACE(LEFT(p.horario_texto, 70), E'\\n', ' ')
+                        ELSE 'horario sin estructurar' END,
+                   REPLACE(LEFT(p.horario_texto, 70), E'\n', ' ')
             FROM puntos p LEFT JOIN distritos d ON d.id = p.distrito_id
             WHERE p.estado <> 'cerrado' AND p.duplicado_de IS NULL
-              AND (p.coordenadas IS NULL OR p.confianza_coords = 1
-                   OR NOT EXISTS (SELECT 1 FROM horarios_punto h WHERE h.punto_id = p.id)
+              AND (p.coordenadas IS NULL
+                   OR (p.distrito_id IS NULL AND p.municipio = 'Madrid')
                    OR p.notas LIKE 'horario estructurado parcial%%'
-                   OR (p.estado = 'pendiente_verificar' AND p.tipo_punto <> 'contenedor_pilas'))
+                   OR (NOT EXISTS (SELECT 1 FROM horarios_punto h WHERE h.punto_id = p.id)
+                       AND p.horario_texto IS DISTINCT FROM 'Horario del comercio'))
             ORDER BY 5, p.tipo_punto, p.id""")
 
         runs = q("""
@@ -90,6 +97,13 @@ def main():
         "",
         _tabla(["Id", "Fuente", "Nombre", "Duplicado de", "Fuente original", "Distancia (m)"], duplicados)
         if duplicados else "Ninguno.",
+        "",
+        "## Verificación por fuente",
+        "",
+        "Los datos oficiales del Ayuntamiento entran como `activo`; el resto como "
+        "`pendiente_verificar` hasta que alguien los compruebe.",
+        "",
+        _tabla(["Fuente", "Estado", "Coordenadas", "Puntos"], verificacion),
         "",
         f"## Para revisar a mano ({len(revisar)})",
         "",
