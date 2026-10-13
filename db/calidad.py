@@ -67,7 +67,7 @@ def main():
                    OR (p.distrito_id IS NULL AND p.municipio = 'Madrid')
                    OR p.notas LIKE 'horario estructurado parcial%%'
                    OR (NOT EXISTS (SELECT 1 FROM horarios_punto h WHERE h.punto_id = p.id)
-                       AND p.horario_texto IS DISTINCT FROM 'Horario del comercio'))
+                       AND p.tipo_punto NOT IN ('tienda', 'contenedor_scrap')))
             ORDER BY 5, p.tipo_punto, p.id""")
 
         runs = q("""

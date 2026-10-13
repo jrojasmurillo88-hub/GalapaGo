@@ -69,7 +69,8 @@ RETURNING id, (xmax = 0) AS insertado
 
 def _ultimos_archivos() -> list[Path]:
     por_fuente: dict[str, Path] = {}
-    for ruta in sorted(OUTPUT.glob("*_*.json")):
+    # Solo salidas de scraper/main.py: <fuente>_<AAAAMMDD>_<HHMMSS>.json
+    for ruta in sorted(OUTPUT.glob("*_????????_??????.json")):
         por_fuente[ruta.stem.rsplit("_", 2)[0]] = ruta   # el último por orden de fecha gana
     return list(por_fuente.values())
 

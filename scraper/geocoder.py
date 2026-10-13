@@ -91,6 +91,32 @@ def _gmaps(direccion: str, ciudad: str, api_key: str) -> tuple[float, float] | N
     return None
 
 
+def inverso(lat: float, lng: float) -> dict | None:
+    """Dirección y municipio para unas coordenadas (Nominatim reverse, con caché)."""
+    cache = _cargar_cache()
+    key = f"rev|{lat:.6f},{lng:.6f}"
+    if key not in cache:
+        time.sleep(1.1)  # máximo 1 petición/segundo (política de uso de Nominatim)
+        try:
+            resp = requests.get(
+                "https://nominatim.openstreetmap.org/reverse",
+                params={"lat": lat, "lon": lng, "format": "jsonv2", "zoom": 18, "accept-language": "es"},
+                headers=HEADERS_NOMINATIM, timeout=15,
+            )
+            resp.raise_for_status()
+            a = resp.json().get("address", {})
+            cache[key] = {
+                "direccion": " ".join(x for x in (a.get("road"), a.get("house_number")) if x) or None,
+                "municipio": a.get("city") or a.get("town") or a.get("village"),
+                "codigo_postal": a.get("postcode"),
+            }
+        except Exception as e:
+            print(f"    [Nominatim reverse] Error: {e}")
+            return None
+        _guardar_cache(cache)
+    return cache[key]
+
+
 # ── Función principal ─────────────────────────────────────────────────────────
 
 def geocodificar_puntos(

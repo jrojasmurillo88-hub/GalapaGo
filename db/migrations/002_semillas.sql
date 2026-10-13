@@ -78,3 +78,31 @@ INSERT INTO operadores (slug, nombre, tipo, web) VALUES
     ('ecopilas',            'Ecopilas',                'scrap',        'https://www.ecopilas.es'),
     ('ambilamp',            'Ambilamp',                'scrap',        'https://www.ambilamp.es')
 ON CONFLICT (slug) DO UPDATE SET nombre = EXCLUDED.nombre, tipo = EXCLUDED.tipo, web = EXCLUDED.web;
+
+-- Operadores de tiendas (cadenas). Solo nombre en texto.
+INSERT INTO operadores (slug, nombre, tipo) VALUES
+    ('tienda-mediamarkt',      'MediaMarkt',      'tienda'),
+    ('tienda-worten',          'Worten',          'tienda'),
+    ('tienda-fnac',            'Fnac',            'tienda'),
+    ('tienda-el-corte-ingles', 'El Corte Inglés', 'tienda'),
+    ('tienda-hipercor',        'Hipercor',        'tienda'),
+    ('tienda-leroy-merlin',    'Leroy Merlin',    'tienda'),
+    ('tienda-conforama',       'Conforama',       'tienda'),
+    ('tienda-ikea',            'IKEA',            'tienda'),
+    ('tienda-carrefour',       'Carrefour',       'tienda'),
+    ('tienda-alcampo',         'Alcampo',         'tienda')
+ON CONFLICT (slug) DO UPDATE SET nombre = EXCLUDED.nombre, tipo = EXCLUDED.tipo;
+
+-- ── Notas normativas ───────────────────────────────────────────────────────
+-- Texto comprobado contra el resumen oficial de MITECO (no inventar ni ampliar).
+
+INSERT INTO notas_normativas (clave, texto, fuente_url, verificado_at) VALUES
+    ('distribuidores_raee_muy_pequenos',
+     'Los establecimientos con una zona de venta de aparatos eléctricos y electrónicos de al menos 400 m² '
+     'deben recoger gratuitamente, en la tienda o en su entorno inmediato, los RAEE muy pequeños '
+     '(ninguna dimensión exterior superior a 25 cm), sin obligación de comprar un aparato equivalente '
+     '(Real Decreto 110/2015).',
+     'https://www.miteco.gob.es/es/calidad-y-evaluacion-ambiental/temas/prevencion-y-gestion-residuos/flujos/aparatos-electr/electricos-y-electronicos-recogida-transporte.html',
+     '2026-10-13')
+ON CONFLICT (clave) DO UPDATE SET
+    texto = EXCLUDED.texto, fuente_url = EXCLUDED.fuente_url, verificado_at = EXCLUDED.verificado_at;
