@@ -133,6 +133,13 @@ def fijos() -> list[Punto]:
     return puntos
 
 
+def _nombre_proximidad(centro: str) -> str:
+    """En los de vía pública, CENTRO repite la dirección ("Plaza del Rey, 3. Situado en vía pública")."""
+    if not centro or "vía pública" in centro.lower():
+        return "Punto Limpio de Proximidad"
+    return centro
+
+
 def proximidad() -> list[Punto]:
     puntos = []
     vistos: Counter = Counter()
@@ -147,7 +154,7 @@ def proximidad() -> list[Punto]:
             fuente="datos.madrid.es/300198",
             fuente_id=fuente_id,
             fuente_url=BASE + "300198-0-puntos-proximidad",
-            nombre=f["CENTRO"] or f["DIRECCION_COMPLETA"],
+            nombre=_nombre_proximidad(f["CENTRO"]),
             tipo_punto="punto_limpio_proximidad",
             operador_slug=OPERADOR,
             direccion=f["DIRECCION_COMPLETA"],
