@@ -17,3 +17,7 @@ scraper/output/
 # Sistema
 .DS_Store
 Thumbs.db
+
+# Cualquier otro archivo de entorno
+**/.env*
+!**/.env.example
