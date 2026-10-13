@@ -1,183 +1,205 @@
 """
-Carga los archivos JSON del scraper en Supabase vía REST API (HTTP).
-
-Requisitos:
-  pip install requests  (ya instalado)
-
-Configuración: archivo db/.env con:
-  SUPABASE_URL=https://[ref].supabase.co
-  SUPABASE_SERVICE_KEY=[service_role_key]
+Carga en Postgres los JSON que genera scraper/main.py.
 
 Uso:
-  python loader.py                    # carga el archivo más reciente de cada sistema
-  python loader.py --archivo path.json
+  python db/loader.py                      # último archivo de cada fuente en scraper/output/
+  python db/loader.py --archivo ruta.json
+
+Reglas:
+- Upsert por (fuente, fuente_id). Solo se actualizan los campos que vienen de la
+  fuente: sponsor, verificación, duplicados y estado puestos por un admin se respetan.
+- Qué acepta cada punto: se rehace salvo las filas con origen='manual'.
+- Horarios: se reemplazan con lo que trae la fuente.
+- Puntos que ya no aparecen en la fuente pasan a estado 'cerrado' (con nota).
+- Al final marca duplicados entre fuentes distintas (mismo tipo, < 15 m).
+- Cada fuente queda registrada en scraping_runs. Todo va en una transacción.
 """
 
-import os
-import sys
-import json
 import argparse
+import json
+import sys
+from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
+from config import conectar
 
-BATCH_SIZE = 500
+OUTPUT = Path(__file__).parent.parent / "scraper" / "output"
+NOTA_DESAPARECIDO = "Desaparecido de la fuente"
+RADIO_DUPLICADO_M = 15
 
-
-# ── Configuración ─────────────────────────────────────────────────────────────
-
-def _leer_env() -> tuple[str, str]:
-    env_path = Path(__file__).parent / ".env"
-    config = {}
-    if env_path.exists():
-        for linea in env_path.read_text(encoding="utf-8").splitlines():
-            if "=" in linea and not linea.startswith("#"):
-                k, v = linea.split("=", 1)
-                config[k.strip()] = v.strip()
-
-    url = os.environ.get("SUPABASE_URL") or config.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_SERVICE_KEY") or config.get("SUPABASE_SERVICE_KEY", "")
-
-    if not url or not key:
-        print("ERROR: Falta SUPABASE_URL o SUPABASE_SERVICE_KEY en db/.env")
-        sys.exit(1)
-
-    return url.rstrip("/"), key
-
-
-def _headers(key: str) -> dict:
-    return {
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "Prefer": "resolution=ignore-duplicates,return=minimal",
-    }
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _get_sistemas(base_url: str, key: str) -> dict[str, int]:
-    resp = requests.get(
-        f"{base_url}/rest/v1/sistemas?select=id,nombre",
-        headers=_headers(key),
-        timeout=10,
-    )
-    resp.raise_for_status()
-    return {s["nombre"]: s["id"] for s in resp.json()}
+SQL_UPSERT = """
+INSERT INTO puntos (
+    fuente, fuente_id, fuente_url, nombre, tipo_punto, operador_id, direccion,
+    detalle_ubicacion, distrito_id, barrio, municipio, codigo_postal, coordenadas,
+    confianza_coords, horario_texto, estado, notas, scraped_at, updated_at
+) VALUES (
+    %(fuente)s, %(fuente_id)s, %(fuente_url)s, %(nombre)s, %(tipo_punto)s, %(operador_id)s,
+    %(direccion)s, %(detalle_ubicacion)s, %(distrito_id)s, %(barrio)s, %(municipio)s,
+    %(codigo_postal)s,
+    CASE WHEN %(lat)s::float IS NULL THEN NULL
+         ELSE ST_SetSRID(ST_MakePoint(%(lng)s::float, %(lat)s::float), 4326)::geography END,
+    %(confianza_coords)s, %(horario_texto)s, %(estado)s, %(notas)s, %(scraped_at)s, NOW()
+)
+ON CONFLICT (fuente, fuente_id) DO UPDATE SET
+    fuente_url        = EXCLUDED.fuente_url,
+    nombre            = EXCLUDED.nombre,
+    tipo_punto        = EXCLUDED.tipo_punto,
+    operador_id       = EXCLUDED.operador_id,
+    direccion         = EXCLUDED.direccion,
+    detalle_ubicacion = EXCLUDED.detalle_ubicacion,
+    distrito_id       = EXCLUDED.distrito_id,
+    barrio            = EXCLUDED.barrio,
+    municipio         = EXCLUDED.municipio,
+    codigo_postal     = EXCLUDED.codigo_postal,
+    -- unas coordenadas verificadas a mano (3) no se pisan
+    coordenadas       = CASE WHEN puntos.confianza_coords >= 3 THEN puntos.coordenadas
+                             ELSE EXCLUDED.coordenadas END,
+    confianza_coords  = GREATEST(puntos.confianza_coords, EXCLUDED.confianza_coords),
+    horario_texto     = EXCLUDED.horario_texto,
+    -- reabrir solo si lo cerró este loader; un cierre manual se respeta
+    estado            = CASE WHEN puntos.notas LIKE %(nota_desaparecido)s THEN EXCLUDED.estado
+                             ELSE puntos.estado END,
+    notas             = EXCLUDED.notas,
+    scraped_at        = EXCLUDED.scraped_at,
+    updated_at        = NOW()
+RETURNING id, (xmax = 0) AS insertado
+"""
 
 
-def _seleccionar_archivos(directorio: Path) -> list[Path]:
-    sistemas = ["lito", "ecocomputo", "pilas", "lumina", "redverde"]
-    seleccionados = []
-    for sistema in sistemas:
-        geo = sorted(directorio.glob(f"{sistema}_geo_*.json"), reverse=True)
-        sin_geo = [
-            f for f in sorted(directorio.glob(f"{sistema}_*.json"), reverse=True)
-            if "test" not in f.name and "_geo_" not in f.name
-        ]
-        if geo:
-            seleccionados.append(geo[0])
-        elif sin_geo:
-            seleccionados.append(sin_geo[0])
-    return seleccionados
+def _ultimos_archivos() -> list[Path]:
+    por_fuente: dict[str, Path] = {}
+    for ruta in sorted(OUTPUT.glob("*_*.json")):
+        por_fuente[ruta.stem.rsplit("_", 2)[0]] = ruta   # el último por orden de fecha gana
+    return list(por_fuente.values())
 
 
-# ── Carga ─────────────────────────────────────────────────────────────────────
+def _cargar_fuente(conn, fuente: str, puntos: list[dict], archivo: str,
+                   operadores: dict, tipos: dict) -> dict:
+    run_id = conn.execute(
+        "INSERT INTO scraping_runs (fuente, archivo, leidos) VALUES (%s, %s, %s) RETURNING id",
+        (fuente, archivo, len(puntos)),
+    ).fetchone()[0]
 
-def cargar_archivo(ruta: Path, base_url: str, key: str, sistemas_map: dict) -> dict:
-    puntos = json.loads(ruta.read_text(encoding="utf-8-sig"))
-    stats = {"insertados": 0, "sin_sistema": 0, "errores": 0, "total": len(puntos)}
-
-    rows = []
+    filas = []
     for p in puntos:
-        sistema_id = sistemas_map.get(p.get("sistema", ""))
-        if not sistema_id:
-            stats["sin_sistema"] += 1
-            continue
+        operador_id = operadores.get(p["operador_slug"])
+        if operador_id is None:
+            raise ValueError(f"Operador desconocido: {p['operador_slug']} (añádelo en 002_semillas.sql)")
+        filas.append({**p, "operador_id": operador_id, "nota_desaparecido": f"{NOTA_DESAPARECIDO}%"})
 
-        lat = p.get("lat")
-        lng = p.get("lng")
+    with conn.cursor() as cur:
+        cur.executemany(SQL_UPSERT, filas, returning=True)
+        resultados = []
+        while True:
+            resultados.append(cur.fetchone())
+            if not cur.nextset():
+                break
+    ids = [r[0] for r in resultados]
+    nuevos = sum(1 for r in resultados if r[1])
 
-        row = {
-            "sistema_id":          sistema_id,
-            "nombre":              p.get("nombre", ""),
-            "direccion_texto":     p.get("direccion") or None,
-            "ciudad":              p.get("ciudad") or None,
-            "horario":             p.get("horario"),
-            "fuente_url":          p.get("fuente_url"),
-            "confianza_coords":    1 if lat is not None else 0,
-            "ultima_verificacion": p.get("ultima_verificacion"),
-        }
-
-        # PostgREST requiere que todos los objetos del batch tengan las mismas keys
-        row["coordenadas"] = f"SRID=4326;POINT({lng} {lat})" if lat is not None and lng is not None else None
-
-        rows.append(row)
-
-    # Insertar en batches
-    for i in range(0, len(rows), BATCH_SIZE):
-        batch = rows[i:i + BATCH_SIZE]
-        resp = requests.post(
-            f"{base_url}/rest/v1/puntos?on_conflict=sistema_id,nombre,ciudad",
-            headers=_headers(key),
-            json=batch,
-            timeout=30,
+    # Qué acepta cada punto (respetando filas manuales)
+    conn.execute(
+        "DELETE FROM puntos_tipos WHERE punto_id = ANY(%s) AND origen IS DISTINCT FROM 'manual'", (ids,)
+    )
+    filas_tipos, desconocidos = [], set()
+    for punto_id, p in zip(ids, puntos):
+        for slug in p["tipos"]:
+            if slug not in tipos:
+                desconocidos.add(slug)
+                continue
+            tipo_id, stream = tipos[slug]
+            filas_tipos.append((punto_id, tipo_id, stream, p["origen_tipos"]))
+    if desconocidos:
+        raise ValueError(f"Tipos de dispositivo desconocidos: {sorted(desconocidos)}")
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO puntos_tipos (punto_id, tipo_dispositivo_id, waste_stream, origen) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+            filas_tipos,
         )
-        if resp.ok:
-            stats["insertados"] += len(batch)
-            print(f"  Batch {i // BATCH_SIZE + 1}: {len(batch)} puntos OK")
-        else:
-            stats["errores"] += len(batch)
-            print(f"  Batch {i // BATCH_SIZE + 1}: ERROR {resp.status_code} — {resp.text[:200]}")
 
+    # Horarios
+    conn.execute("DELETE FROM horarios_punto WHERE punto_id = ANY(%s)", (ids,))
+    filas_horarios = [
+        (punto_id, h["dia_semana"], h["fecha"], h["hora_inicio"], h["hora_fin"], h["ubicacion_texto"], h["nota"])
+        for punto_id, p in zip(ids, puntos)
+        for h in p["horarios"]
+    ]
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO horarios_punto (punto_id, dia_semana, fecha, hora_inicio, hora_fin, ubicacion_texto, nota) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            filas_horarios,
+        )
+
+    # Puntos que ya no publica la fuente
+    hoy = datetime.now(timezone.utc).date().isoformat()
+    desactivados = conn.execute(
+        "UPDATE puntos SET estado = 'cerrado', notas = %s, updated_at = NOW() "
+        "WHERE fuente = %s AND NOT (id = ANY(%s)) AND estado <> 'cerrado'",
+        (f"{NOTA_DESAPARECIDO} el {hoy}", fuente, ids),
+    ).rowcount
+
+    stats = {"leidos": len(puntos), "nuevos": nuevos, "actualizados": len(ids) - nuevos,
+             "desactivados": desactivados, "tipos": len(filas_tipos), "horarios": len(filas_horarios)}
+    conn.execute(
+        "UPDATE scraping_runs SET fin = NOW(), nuevos = %s, actualizados = %s, desactivados = %s WHERE id = %s",
+        (stats["nuevos"], stats["actualizados"], stats["desactivados"], run_id),
+    )
     return stats
 
 
-def cargar_todos(archivos: list[Path]):
-    base_url, key = _leer_env()
-    print(f"Conectando a {base_url}...")
+def marcar_duplicados(conn) -> int:
+    """Mismo tipo de punto, fuentes distintas, a menos de RADIO_DUPLICADO_M metros:
+    se queda el de más confianza (verificado > coords oficiales > id más antiguo)."""
+    conn.execute("UPDATE puntos SET duplicado_de = NULL WHERE duplicado_de IS NOT NULL")
+    return conn.execute(f"""
+        WITH pares AS (
+            SELECT DISTINCT ON (b.id) b.id AS duplicado, a.id AS original
+            FROM puntos a
+            JOIN puntos b
+              ON a.tipo_punto = b.tipo_punto
+             AND a.fuente <> b.fuente
+             AND a.estado <> 'cerrado' AND b.estado <> 'cerrado'
+             AND ST_DWithin(a.coordenadas, b.coordenadas, {RADIO_DUPLICADO_M})
+             AND (a.verificado_at IS NOT NULL, a.confianza_coords, -a.id)
+               > (b.verificado_at IS NOT NULL, b.confianza_coords, -b.id)
+            ORDER BY b.id, ST_Distance(a.coordenadas, b.coordenadas)
+        )
+        UPDATE puntos p SET duplicado_de = pares.original
+        FROM pares WHERE p.id = pares.duplicado
+    """).rowcount
 
-    sistemas_map = _get_sistemas(base_url, key)
-    print(f"Sistemas en BD: {list(sistemas_map.keys())}\n")
-
-    for ruta in archivos:
-        print(f"{'=' * 50}")
-        print(f"Cargando: {ruta.name}")
-        print(f"{'=' * 50}")
-        stats = cargar_archivo(ruta, base_url, key, sistemas_map)
-        print(f"  Total en archivo : {stats['total']}")
-        print(f"  Insertados       : {stats['insertados']}")
-        print(f"  Sin sistema BD   : {stats['sin_sistema']}")
-        print(f"  Errores          : {stats['errores']}\n")
-
-    print("Carga completada.")
-
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser()
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--archivo", metavar="PATH")
-    group.add_argument("--directorio", metavar="PATH")
+    parser.add_argument("--archivo", metavar="PATH")
     args = parser.parse_args()
 
-    if args.archivo:
-        archivos = [Path(args.archivo)]
-    else:
-        directorio = Path(args.directorio) if args.directorio else Path(__file__).parent.parent / "scraper" / "output"
-        archivos = _seleccionar_archivos(directorio)
-
+    archivos = [Path(args.archivo)] if args.archivo else _ultimos_archivos()
     if not archivos:
-        print("No se encontraron archivos JSON.")
-        sys.exit(1)
+        sys.exit("No hay archivos en scraper/output/. Corre antes: python scraper/main.py")
 
-    print(f"Archivos a cargar ({len(archivos)}):")
-    for a in archivos:
-        print(f"  {a.name}")
-    print()
+    with conectar() as conn:
+        operadores = dict(conn.execute("SELECT slug, id FROM operadores").fetchall())
+        tipos = {slug: (i, s) for slug, i, s in
+                 conn.execute("SELECT slug, id, waste_stream FROM tipos_dispositivo").fetchall()}
 
-    cargar_todos(archivos)
+        with conn.transaction():
+            for ruta in archivos:
+                puntos = json.loads(ruta.read_text(encoding="utf-8"))
+                por_fuente = defaultdict(list)
+                for p in puntos:
+                    por_fuente[p["fuente"]].append(p)
+                print(f"{ruta.name}")
+                for fuente, lista in sorted(por_fuente.items()):
+                    s = _cargar_fuente(conn, fuente, lista, ruta.name, operadores, tipos)
+                    print(f"  {fuente:<26} leídos {s['leidos']:>5} · nuevos {s['nuevos']:>5} · "
+                          f"actualizados {s['actualizados']:>5} · cerrados {s['desactivados']:>3} · "
+                          f"horarios {s['horarios']:>5}")
+            print(f"Duplicados marcados: {marcar_duplicados(conn)}")
+    print("Carga completada.")
 
 
 if __name__ == "__main__":

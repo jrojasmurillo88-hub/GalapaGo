@@ -1,0 +1,2 @@
+# Datos de entrada tal cual los publica la fuente (sin convertir finales de línea)
+scraper/input/** -text

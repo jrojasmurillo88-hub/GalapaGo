@@ -32,7 +32,7 @@ NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 GMAPS_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 
 HEADERS_NOMINATIM = {
-    "User-Agent": "raee-colombia-app/1.0 (jrojasmurillo88@gmail.com)"
+    "User-Agent": "GalapaGo-geocoder/0.1 (jrojasmurillo88@gmail.com)"
 }
 
 
@@ -56,12 +56,12 @@ def _cache_key(direccion: str, ciudad: str) -> str:
 # ── Proveedores ───────────────────────────────────────────────────────────────
 
 def _nominatim(direccion: str, ciudad: str) -> tuple[float, float] | None:
-    query = f"{direccion}, {ciudad}, Colombia"
+    query = f"{direccion}, {ciudad}, España"
     params = {
         "q": query,
         "format": "json",
         "limit": 1,
-        "countrycodes": "co",
+        "countrycodes": "es",
     }
     try:
         resp = requests.get(NOMINATIM_URL, params=params, headers=HEADERS_NOMINATIM, timeout=10)
@@ -75,8 +75,8 @@ def _nominatim(direccion: str, ciudad: str) -> tuple[float, float] | None:
 
 
 def _gmaps(direccion: str, ciudad: str, api_key: str) -> tuple[float, float] | None:
-    query = f"{direccion}, {ciudad}, Colombia"
-    params = {"address": query, "key": api_key, "region": "co"}
+    query = f"{direccion}, {ciudad}, España"
+    params = {"address": query, "key": api_key, "region": "es"}
     try:
         resp = requests.get(GMAPS_URL, params=params, timeout=10)
         resp.raise_for_status()
