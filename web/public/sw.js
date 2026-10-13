@@ -2,7 +2,7 @@
 // No cachea nada — su único trabajo es recibir el push y mostrar la notificación.
 
 self.addEventListener("push", (event) => {
-  let datos = { titulo: "RAEEconecta", cuerpo: "¿Botaste tu RAEE?", puntoId: null };
+  let datos = { titulo: "GalapaGo", cuerpo: "¿Llevaste tu aparato?", puntoId: null };
   try {
     if (event.data) datos = { ...datos, ...event.data.json() };
   } catch {
@@ -12,10 +12,10 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(datos.titulo, {
       body: datos.cuerpo,
-      icon: "/next.svg",
-      badge: "/next.svg",
+      icon: "/icon.svg",
+      badge: "/icon.svg",
       data: { puntoId: datos.puntoId, url: "/" },
-      tag: "raee-checkin",
+      tag: "galapago-checkin",
     })
   );
 });

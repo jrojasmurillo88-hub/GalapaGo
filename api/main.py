@@ -169,7 +169,12 @@ async def get_catalogo():
         "activo": "eq.true", "order": "orden",
     })
     distritos = await _get("distritos", {"select": "*", "order": "nombre"})
-    operadores = await _get("operadores", {"select": "slug,nombre,tipo", "order": "nombre"})
+    # Solo operadores con algún punto (los SCRAP sin datos todavía no salen en el filtro)
+    operadores = await _get("operadores", {
+        "select": "slug,nombre,tipo,puntos!inner(id)", "puntos.limit": "1", "order": "nombre",
+    })
+    for o in operadores:
+        o.pop("puntos", None)
     datos = {
         "categorias": categorias,
         "tipos_dispositivo": tipos,

@@ -1,132 +1,95 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
-import {
-  obtenerProximoCheckinListo,
-  marcarResuelto,
-  type CheckinPendiente,
-} from "@/lib/checkins";
+import { useMemo, useState, useSyncExternalStore } from "react";
+import { instantaneaCheckin, marcarResuelto, suscribirCheckins, type CheckinPendiente } from "@/lib/checkins";
 import { postEntrega, postReporte } from "@/lib/api";
-import { pesoEstimadoGramos } from "@/lib/pesos";
-import { itemsPorCategorias, formatearPeso } from "@/lib/itemsRaee";
+import { useCatalogo } from "@/lib/catalogo";
+import { nombreDispositivo } from "@/lib/formato";
+import { useIdioma } from "@/lib/i18n";
 
-const UMBRAL_NORMA_SOCIAL = 5;
-const MS_ANTES_DE_AVISAR_DEMORA = 4000;
+const UMBRAL_NORMA_SOCIAL = 5; // por debajo, la cifra desanima más que anima
 
-type Paso = "pregunta" | "items" | "impacto" | "cerrado" | "enviando" | "error";
+type Paso = "pregunta" | "items" | "enviando" | "error" | "impacto" | "cerrado";
 
 export default function CheckinPrompt() {
-  const [checkin, setCheckin] = useState<CheckinPendiente | null>(null);
+  const { idioma, t } = useIdioma();
+  const { catalogo } = useCatalogo();
+  const instantanea = useSyncExternalStore(suscribirCheckins, instantaneaCheckin, () => "");
+  const pendiente = useMemo<CheckinPendiente | null>(() => (instantanea ? JSON.parse(instantanea) : null), [instantanea]);
+  // Al responder, el check-in se marca resuelto y desaparece de la suscripción:
+  // se fija aquí para poder enseñar el "gracias" antes de pasar al siguiente.
+  const [fijado, setFijado] = useState<CheckinPendiente | null>(null);
+  const checkin = fijado ?? pendiente;
   const [paso, setPaso] = useState<Paso>("pregunta");
-  const [conteoZona, setConteoZona] = useState(0);
-  const [pesoReal, setPesoReal] = useState<number | null>(null);
-  const [itemsSeleccionados, setItemsSeleccionados] = useState<Set<string>>(new Set());
-  const [demorando, setDemorando] = useState(false);
-  const [accionPendiente, setAccionPendiente] = useState<
-    "entregado" | "cerrado" | null
-  >(null);
-
-  useEffect(() => {
-    setCheckin(obtenerProximoCheckinListo());
-  }, []);
-
-  useEffect(() => {
-    if (paso !== "enviando") {
-      setDemorando(false);
-      return;
-    }
-    const timer = setTimeout(() => setDemorando(true), MS_ANTES_DE_AVISAR_DEMORA);
-    return () => clearTimeout(timer);
-  }, [paso]);
-
-  function siguienteCheckin() {
-    setPaso("pregunta");
-    setItemsSeleccionados(new Set());
-    setCheckin(obtenerProximoCheckinListo());
-  }
+  const [cantidades, setCantidades] = useState<Record<string, number>>({});
+  const [resultado, setResultado] = useState<{ conteo: number; kg: number | null }>({ conteo: 0, kg: null });
+  const [accion, setAccion] = useState<"entrega" | "cerrado" | null>(null);
 
   if (!checkin) return null;
+  const actual = checkin;
 
-  function irAItems() {
-    setPaso("items");
-  }
-
-  function alternarItem(id: string) {
-    setItemsSeleccionados((actual) => {
-      const nuevo = new Set(actual);
-      if (nuevo.has(id)) nuevo.delete(id);
-      else nuevo.add(id);
-      return nuevo;
-    });
+  // marcarResuelto() ya avisa a la suscripción: aquí solo se reinicia el diálogo
+  function siguiente() {
+    setFijado(null);
+    setPaso("pregunta");
+    setCantidades({});
   }
 
   async function confirmarEntrega() {
-    setAccionPendiente("entregado");
+    setAccion("entrega");
+    setFijado(actual);
     setPaso("enviando");
     try {
-      const items = Array.from(itemsSeleccionados);
-      const resp = await postEntrega({ punto_id: checkin!.puntoId, items });
-      setConteoZona(resp.conteo_zona);
-      setPesoReal(resp.peso_gramos);
-      marcarResuelto(checkin!.puntoId);
+      const items = Object.entries(cantidades)
+        .filter(([, n]) => n > 0)
+        .map(([tipo, cantidad]) => ({ tipo, cantidad }));
+      const resp = await postEntrega({ punto_id: actual.puntoId, items });
+      setResultado({ conteo: resp.conteo_zona, kg: resp.peso_est_kg });
+      marcarResuelto(actual.puntoId);
       setPaso("impacto");
     } catch {
       setPaso("error");
     }
   }
 
-  function responderNoPude() {
-    marcarResuelto(checkin!.puntoId);
-    siguienteCheckin();
-  }
-
-  async function responderCerrado() {
-    setAccionPendiente("cerrado");
+  async function avisarCerrado() {
+    setAccion("cerrado");
+    setFijado(actual);
     setPaso("enviando");
     try {
-      await postReporte({ punto_id: checkin!.puntoId, tipo: "cerrado" });
-      marcarResuelto(checkin!.puntoId);
+      await postReporte({ punto_id: actual.puntoId, tipo: "cerrado", detalle: "Desde el check-in" });
+      marcarResuelto(actual.puntoId);
       setPaso("cerrado");
     } catch {
       setPaso("error");
     }
   }
 
-  function reintentar() {
-    if (accionPendiente === "entregado") confirmarEntrega();
-    else if (accionPendiente === "cerrado") responderCerrado();
+  function noPude() {
+    marcarResuelto(actual.puntoId);
+    siguiente();
   }
 
-  const itemsDisponibles = itemsPorCategorias(checkin.categoriaIds);
-  const peso = pesoReal ?? pesoEstimadoGramos(checkin.sistema);
+  const opciones = (catalogo?.tipos_dispositivo ?? []).filter((d) => actual.tipos.includes(d.slug));
+  const boton = "w-full rounded-lg px-4 py-2.5 text-sm font-semibold";
+  const primario = `${boton} bg-marca text-sobre-marca hover:bg-marca-fuerte`;
+  const secundario = `${boton} border border-borde hover:border-texto-suave`;
 
   return (
-    <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/40 px-4">
-      <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl">
+    <div className="fixed inset-0 z-[2000] flex items-end justify-center bg-black/40 px-4 pb-4 sm:items-center">
+      <div className="w-full max-w-sm rounded-2xl bg-superficie p-5 text-texto shadow-xl">
         {paso === "pregunta" && (
           <>
-            <p className="text-base font-semibold text-gray-900">
-              ¿Pudiste entregar en {checkin.nombrePunto}?
-            </p>
+            <p className="text-base font-semibold">{t("checkin.pregunta", { punto: actual.nombrePunto })}</p>
             <div className="mt-4 flex flex-col gap-2">
-              <button
-                onClick={irAItems}
-                className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
-              >
-                Sí, lo entregué
+              <button onClick={() => setPaso("items")} className={primario}>
+                {t("checkin.si")}
               </button>
-              <button
-                onClick={responderNoPude}
-                className="rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 hover:border-gray-300"
-              >
-                No pude ir
+              <button onClick={noPude} className={secundario}>
+                {t("checkin.noPude")}
               </button>
-              <button
-                onClick={responderCerrado}
-                className="rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 hover:border-gray-300"
-              >
-                El punto estaba cerrado
+              <button onClick={avisarCerrado} className={secundario}>
+                {t("checkin.estabaCerrado")}
               </button>
             </div>
           </>
@@ -134,114 +97,89 @@ export default function CheckinPrompt() {
 
         {paso === "items" && (
           <>
-            <p className="text-base font-semibold text-gray-900">
-              ¿Qué entregaste en {checkin.nombrePunto}?
-            </p>
-            <p className="mt-1 text-sm text-gray-500">
-              Marca todo lo que dejaste ahí — nos ayuda a calcular el impacto real.
-            </p>
-            <div className="mt-3 flex max-h-64 flex-col gap-1.5 overflow-y-auto">
-              {itemsDisponibles.map((item) => {
-                const marcado = itemsSeleccionados.has(item.id);
+            <p className="text-base font-semibold">{t("checkin.queEntregaste")}</p>
+            <ul className="mt-3 flex max-h-64 flex-col gap-1.5 overflow-y-auto">
+              {opciones.map((d) => {
+                const n = cantidades[d.slug] ?? 0;
                 return (
-                  <label
-                    key={item.id}
-                    className={`flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2 text-sm ${
-                      marcado ? "border-emerald-400 bg-emerald-50" : "border-gray-200"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={marcado}
-                      onChange={() => alternarItem(item.id)}
-                      className="h-4 w-4 accent-emerald-600"
-                    />
-                    <span className="flex-1 text-gray-800">{item.etiqueta}</span>
-                    <span className="text-xs text-gray-400">≈{formatearPeso(item.pesoGramosAprox)}</span>
-                  </label>
+                  <li key={d.slug} className="flex items-center gap-2 rounded-lg border border-borde px-3 py-2 text-sm">
+                    <span className="flex-1">
+                      {d.icono} {nombreDispositivo(d, idioma)}
+                    </span>
+                    <button
+                      onClick={() => setCantidades((c) => ({ ...c, [d.slug]: Math.max(0, n - 1) }))}
+                      className="h-7 w-7 rounded-full border border-borde"
+                      aria-label="−"
+                    >
+                      −
+                    </button>
+                    <span className="w-5 text-center font-semibold">{n}</span>
+                    <button
+                      onClick={() => setCantidades((c) => ({ ...c, [d.slug]: Math.min(20, n + 1) }))}
+                      className="h-7 w-7 rounded-full border border-marca text-marca"
+                      aria-label="+"
+                    >
+                      +
+                    </button>
+                  </li>
                 );
               })}
+            </ul>
+            <div className="mt-4 flex flex-col gap-2">
+              <button onClick={confirmarEntrega} className={primario}>
+                {t("checkin.confirmar")}
+              </button>
+              <button
+                onClick={() => {
+                  setCantidades({});
+                  confirmarEntrega();
+                }}
+                className="text-xs text-texto-suave underline"
+              >
+                {t("checkin.saltar")}
+              </button>
             </div>
-            <button
-              onClick={confirmarEntrega}
-              className="mt-4 w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
-            >
-              {itemsSeleccionados.size > 0 ? "Confirmar entrega" : "Confirmar sin especificar"}
-            </button>
           </>
         )}
 
-        {paso === "enviando" && (
-          <div className="flex flex-col items-center gap-2 py-2 text-center">
-            <p className="text-sm text-gray-500">Un momento…</p>
-            {demorando && (
-              <p className="text-xs text-gray-400">
-                Puede tardar unos segundos si el servidor estaba inactivo.
-              </p>
-            )}
-          </div>
-        )}
+        {paso === "enviando" && <p className="py-2 text-center text-sm text-texto-suave">{t("checkin.enviando")}</p>}
 
         {paso === "error" && (
           <>
-            <p className="text-sm text-red-600">
-              No pudimos conectar con el servidor. Si estaba inactivo, puede que ya
-              haya despertado — intenta de nuevo.
-            </p>
-            <button
-              onClick={reintentar}
-              className="mt-4 w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
-            >
-              Reintentar
-            </button>
-            <button
-              onClick={() => setPaso("pregunta")}
-              className="mt-2 w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 hover:border-gray-300"
-            >
-              Cancelar
-            </button>
+            <p className="text-sm text-peligro">{t("checkin.error")}</p>
+            <div className="mt-4 flex flex-col gap-2">
+              <button onClick={accion === "cerrado" ? avisarCerrado : confirmarEntrega} className={primario}>
+                {t("checkin.reintentar")}
+              </button>
+              <button onClick={() => { setFijado(null); setPaso("pregunta"); }} className={secundario}>
+                {t("mapa.cancelar")}
+              </button>
+            </div>
           </>
         )}
 
         {paso === "impacto" && (
           <>
-            <p className="text-base font-semibold text-gray-900">
-              🌱 Entregaste aproximadamente {formatearPeso(peso)} de residuos electrónicos.
-            </p>
-            <p className="mt-2 text-sm text-gray-600">
-              Eso es parte de las miles de toneladas que Colombia recupera cada año.
-            </p>
-            {conteoZona >= UMBRAL_NORMA_SOCIAL && (
-              <p className="mt-2 text-sm text-gray-600">
-                En tu zona, {conteoZona} personas entregaron RAEE en el último mes.
+            <p className="text-lg font-semibold">🌱 {t("checkin.gracias")}</p>
+            {resultado.kg != null && resultado.kg > 0 && (
+              <p className="mt-2 text-sm text-texto-suave">
+                {t("checkin.peso", { kg: resultado.kg.toLocaleString(idioma === "es" ? "es-ES" : "en-GB") })}
               </p>
             )}
-            <button
-              onClick={siguienteCheckin}
-              className="mt-4 w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
-            >
-              Cerrar
+            {resultado.conteo >= UMBRAL_NORMA_SOCIAL && (
+              <p className="mt-2 text-sm text-texto-suave">{t("checkin.normaSocial", { n: resultado.conteo })}</p>
+            )}
+            <button onClick={siguiente} className={`${primario} mt-4`}>
+              {t("checkin.cerrar")}
             </button>
           </>
         )}
 
         {paso === "cerrado" && (
           <>
-            <p className="text-base font-semibold text-gray-900">
-              Gracias por avisarnos. Vamos a verificar la información de ese punto.
-            </p>
-            <Link
-              href="/"
-              onClick={siguienteCheckin}
-              className="mt-4 block text-center text-sm text-emerald-700 underline"
-            >
-              ¿Quieres buscar otro punto cercano?
-            </Link>
-            <button
-              onClick={siguienteCheckin}
-              className="mt-3 w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 hover:border-gray-300"
-            >
-              Cerrar
+            <p className="text-base font-semibold">{t("checkin.reportado")}</p>
+            <button onClick={siguiente} className={`${secundario} mt-4`}>
+              {t("checkin.cerrar")}
             </button>
           </>
         )}

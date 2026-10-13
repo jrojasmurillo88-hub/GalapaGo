@@ -1,43 +1,136 @@
 @import "tailwindcss";
 @import "leaflet/dist/leaflet.css";
 
+/*
+ * Identidad provisional de GalapaGo. Todos los colores salen de estos tokens:
+ * para cambiar la paleta basta con tocar este bloque.
+ *   marca  = verde (acción principal, "esto sí se recicla")
+ *   acento = azul  (información, confianza, enlaces)
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --fondo: #f6f8f7;
+  --superficie: #ffffff;
+  --superficie-2: #eef3f1;
+  --texto: #0f1a16;
+  --texto-suave: #5a6b64;
+  --borde: #dfe7e3;
+
+  --marca: #0e9466;
+  --marca-fuerte: #0a7350;
+  --marca-suave: #e3f5ed;
+  --sobre-marca: #ffffff;
+
+  --acento: #1f6fe0;
+  --acento-suave: #e7effc;
+
+  --aviso: #b45309;
+  --aviso-suave: #fef3c7;
+  --peligro: #c62828;
+  --peligro-suave: #fdecea;
+
+  /* Tipos de punto en el mapa */
+  --tp-fijo: #0e9466;
+  --tp-proximidad: #12a6a0;
+  --tp-movil: #1f6fe0;
+  --tp-tienda: #7c4ddb;
+  --tp-scrap: #d98a00;
+  --tp-pilas: #d1435b;
+  --tp-otro: #6b7a74;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --fondo: #0b1210;
+    --superficie: #121c19;
+    --superficie-2: #1a2723;
+    --texto: #e6efeb;
+    --texto-suave: #9db0a8;
+    --borde: #24332e;
+
+    --marca: #2fc488;
+    --marca-fuerte: #5ad8a3;
+    --marca-suave: #123326;
+    --sobre-marca: #04140d;
+
+    --acento: #6aa6ff;
+    --acento-suave: #142640;
+
+    --aviso: #f5b545;
+    --aviso-suave: #33270c;
+    --peligro: #ff7a73;
+    --peligro-suave: #3a1614;
+  }
+}
+
+:root[data-theme="dark"] {
+  --fondo: #0b1210;
+  --superficie: #121c19;
+  --superficie-2: #1a2723;
+  --texto: #e6efeb;
+  --texto-suave: #9db0a8;
+  --borde: #24332e;
+  --marca: #2fc488;
+  --marca-fuerte: #5ad8a3;
+  --marca-suave: #123326;
+  --sobre-marca: #04140d;
+  --acento: #6aa6ff;
+  --acento-suave: #142640;
+  --aviso: #f5b545;
+  --aviso-suave: #33270c;
+  --peligro: #ff7a73;
+  --peligro-suave: #3a1614;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-fondo: var(--fondo);
+  --color-superficie: var(--superficie);
+  --color-superficie-2: var(--superficie-2);
+  --color-texto: var(--texto);
+  --color-texto-suave: var(--texto-suave);
+  --color-borde: var(--borde);
+  --color-marca: var(--marca);
+  --color-marca-fuerte: var(--marca-fuerte);
+  --color-marca-suave: var(--marca-suave);
+  --color-sobre-marca: var(--sobre-marca);
+  --color-acento: var(--acento);
+  --color-acento-suave: var(--acento-suave);
+  --color-aviso: var(--aviso);
+  --color-aviso-suave: var(--aviso-suave);
+  --color-peligro: var(--peligro);
+  --color-peligro-suave: var(--peligro-suave);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: light dark;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--fondo);
+  color: var(--texto);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
 
-@keyframes raee-pulso-seleccionado {
+/* Popups de Leaflet con los colores del tema */
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--superficie);
+  color: var(--texto);
+}
+
+@keyframes galapago-pulso {
   0% {
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--marca) 55%, transparent);
   }
   70% {
-    box-shadow: 0 0 0 14px rgba(16, 185, 129, 0);
+    box-shadow: 0 0 0 14px color-mix(in srgb, var(--marca) 0%, transparent);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--marca) 0%, transparent);
   }
 }
 
-.raee-marcador-seleccionado {
-  animation: raee-pulso-seleccionado 1.8s ease-out infinite;
+.galapago-marcador-seleccionado {
+  animation: galapago-pulso 1.8s ease-out infinite;
 }

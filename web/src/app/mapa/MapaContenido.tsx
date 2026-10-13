@@ -3,500 +3,488 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
-import { fetchPuntosCercanos, postEvento, type PuntoCercano } from "@/lib/api";
-import { buscarObjetoPorTipo, type ObjetoRaee } from "@/lib/objetos";
-import { construirUrlRutaGoogleMaps } from "@/lib/rutas";
-import { agregarCheckinPendiente } from "@/lib/checkins";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Cabecera from "@/components/Cabecera";
+import EstadoHoy from "@/components/EstadoHoy";
+import { fetchPuntos, postEvento, type Punto, type TipoPunto } from "@/lib/api";
+import { useCatalogo } from "@/lib/catalogo";
+import {
+  COLOR_TIPO_PUNTO,
+  formatDistancia,
+  minutosCaminando,
+  nombreDispositivo,
+  urlComoLlegar,
+} from "@/lib/formato";
+import { useIdioma } from "@/lib/i18n";
+import { registrarIntencion } from "@/lib/intencion";
 import { obtenerSessionId } from "@/lib/sesion";
-import { programarRecordatorioPush } from "@/lib/push";
-import { formatDistancia, minutosCaminando, nivelConfianza, textoConfianza, COLOR_CONFIANZA } from "@/lib/formato";
-import { COLORES_CATEGORIA } from "@/lib/objetos";
-import TarjetaContacto from "@/components/TarjetaContacto";
 
 const MapaPuntos = dynamic(() => import("@/components/MapaPuntos"), {
   ssr: false,
-  loading: () => (
-    <div className="flex h-full items-center justify-center text-gray-400">
-      Cargando mapa…
-    </div>
-  ),
+  loading: () => <div className="h-full w-full animate-pulse bg-superficie-2" />,
 });
 
-const RADIOS_BUSQUEDA = [5000, 20000, 50000];
-const UBICACION_DEFAULT = { lat: 4.711, lng: -74.0721 }; // Bogotá, centro
-const MAX_TARJETAS_POR_TIPO = 5;
+const CENTRO_MADRID = { lat: 40.4168, lng: -3.7038 }; // Puerta del Sol
+const RADIOS = [1500, 3000, 8000, 25000];
+const MIN_RESULTADOS = 3;
+const TAMANO_PAGINA = 15;
+const SEGUNDOS_AVISO_DEMORA = 6;
 
-type EstadoUbicacion = "buscando" | "ok" | "denegada" | "no-disponible" | "manual";
+// Sin aparato elegido, los contenedores especializados (pilas, lámparas en comercios)
+// llenarían el mapa: se ocultan hasta que el usuario los pida.
+const TIPOS_GENERALES: TipoPunto[] = [
+  "punto_limpio_fijo",
+  "punto_limpio_proximidad",
+  "punto_limpio_movil",
+  "tienda",
+];
+const TODOS_LOS_TIPOS: TipoPunto[] = [...TIPOS_GENERALES, "contenedor_scrap", "contenedor_pilas"];
 
-interface ResultadoTipo {
-  cargando: boolean;
-  puntos: PuntoCercano[];
-  radioUsado: number | null;
-  error: string | null;
-}
+type EstadoUbicacion = "buscando" | "ok" | "sin-permiso" | "manual";
 
-interface GrupoSeccion {
-  objetos: ObjetoRaee[];
-  resultado: ResultadoTipo | undefined;
-}
-
-function agruparPorResultado(
-  objetosMapa: ObjetoRaee[],
-  resultados: Record<string, ResultadoTipo>
-): GrupoSeccion[] {
-  const grupos: GrupoSeccion[] = [];
-  const indicePorFirma = new Map<string, number>();
-
-  objetosMapa.forEach((objeto) => {
-    const resultado = resultados[objeto.tipoRaee];
-    const listo = resultado && !resultado.cargando && !resultado.error;
-    const firma = listo
-      ? `puntos:${[...resultado!.puntos].sort((a, b) => a.id - b.id).map((p) => p.id).join(",")}`
-      : `pendiente:${objeto.tipoRaee}`;
-
-    const indiceExistente = indicePorFirma.get(firma);
-    if (indiceExistente !== undefined) {
-      grupos[indiceExistente].objetos.push(objeto);
-    } else {
-      indicePorFirma.set(firma, grupos.length);
-      grupos.push({ objetos: [objeto], resultado });
-    }
-  });
-
-  return grupos;
-}
-
-const SEGUNDOS_AVISO_DEMORA = 8; // mostrar aviso si lleva más de estos segundos cargando
-
-export default function MapaContenido() {
-  const searchParams = useSearchParams();
-  const parametroTipos = searchParams.get("tipos") ?? searchParams.get("tipo") ?? "";
-  const tiposPedidos = parametroTipos.split(",").map((t) => t.trim()).filter(Boolean);
-  const objetos: ObjetoRaee[] = tiposPedidos
-    .map((t) => buscarObjetoPorTipo(t))
-    .filter((o): o is ObjetoRaee => Boolean(o));
-
-  const objetosContacto = objetos.filter((o) => o.contacto);
-  const objetosMapa = objetos.filter((o) => !o.contacto);
-
-  const [ubicacion, setUbicacion] = useState<{ lat: number; lng: number } | null>(null);
-  const [estadoUbicacion, setEstadoUbicacion] = useState<EstadoUbicacion>("buscando");
-  const [resultados, setResultados] = useState<Record<string, ResultadoTipo>>({});
-  const [elegidos, setElegidos] = useState<Record<string, number>>({});
-  const [modoReubicar, setModoReubicar] = useState(false);
-  const [gruposColapsados, setGruposColapsados] = useState<Set<string>>(new Set());
-  const [demorando, setDemorando] = useState(false);
-  const [puntoExpandido, setPuntoExpandido] = useState<number | null>(null);
-
-  function solicitarUbicacion() {
-    setEstadoUbicacion("buscando");
-    if (!("geolocation" in navigator)) {
-      setEstadoUbicacion("no-disponible");
-      setUbicacion(UBICACION_DEFAULT);
-      return;
-    }
+function obtenerUbicacion(): Promise<{ lat: number; lng: number } | null> {
+  return new Promise((resolver) => {
+    if (!("geolocation" in navigator)) return resolver(null);
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setUbicacion({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-        setEstadoUbicacion("ok");
-      },
-      () => {
-        setEstadoUbicacion("denegada");
-        setUbicacion(UBICACION_DEFAULT);
-      },
+      (pos) => resolver({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => resolver(null),
       { enableHighAccuracy: true, timeout: 8000 }
     );
+  });
+}
+type Horario = "ahora" | "hoy" | null;
+
+export default function MapaContenido() {
+  const { idioma, t } = useIdioma();
+  const { catalogo } = useCatalogo();
+  const tipo = useSearchParams().get("tipo");
+  const dispositivo = catalogo?.tipos_dispositivo.find((d) => d.slug === tipo) ?? null;
+
+  // Ubicación
+  const [ubicacion, setUbicacion] = useState<{ lat: number; lng: number } | null>(null);
+  const [estadoUbicacion, setEstadoUbicacion] = useState<EstadoUbicacion>("buscando");
+  const [modoReubicar, setModoReubicar] = useState(false);
+
+  // Filtros
+  const [horario, setHorario] = useState<Horario>(null);
+  const [tiposPunto, setTiposPunto] = useState<TipoPunto[]>(tipo ? TODOS_LOS_TIPOS : TIPOS_GENERALES);
+  const [operador, setOperador] = useState<string>("");
+  const [distrito, setDistrito] = useState<number | null>(null);
+  const [panelFiltros, setPanelFiltros] = useState(false);
+  const [mostrarOtrosDias, setMostrarOtrosDias] = useState(false);
+
+  // Resultados. Cada búsqueda tiene una clave; "cargando" = la respuesta guardada
+  // no corresponde a la búsqueda actual (así no hace falta tocar estado en los efectos).
+  const clave = ubicacion
+    ? JSON.stringify([ubicacion.lat, ubicacion.lng, tipo, tiposPunto, operador, distrito, horario])
+    : null;
+  const [respuesta, setRespuesta] = useState<{
+    clave: string;
+    puntos: Punto[];
+    radio: number | null;
+    error: boolean;
+  } | null>(null);
+  const [demoraClave, setDemoraClave] = useState<string | null>(null);
+  const [paginacion, setPaginacion] = useState<{ clave: string | null; n: number }>({ clave: null, n: TAMANO_PAGINA });
+  const [elegidoId, setElegidoId] = useState<number | null>(null);
+  const refsTarjetas = useRef(new Map<number, HTMLLIElement>());
+
+  const cargando = clave === null || respuesta?.clave !== clave;
+  const error = !cargando && respuesta!.error;
+  const puntos = useMemo(() => (!cargando && respuesta ? respuesta.puntos : []), [cargando, respuesta]);
+  const radioUsado = cargando ? null : respuesta!.radio;
+  const demorando = cargando && demoraClave === clave;
+  const mostrados = paginacion.clave === clave ? paginacion.n : TAMANO_PAGINA;
+  const setMostrados = (n: number) => setPaginacion({ clave, n });
+
+  function aplicarUbicacion(r: { lat: number; lng: number } | null) {
+    setUbicacion(r ?? CENTRO_MADRID);
+    setEstadoUbicacion(r ? "ok" : "sin-permiso");
   }
 
-  function elegirUbicacionManual(lat: number, lng: number) {
-    setElegidos({});
-    setResultados({});
-    setUbicacion({ lat, lng });
-    setEstadoUbicacion("manual");
-    setModoReubicar(false);
+  function pedirUbicacion() {
+    setEstadoUbicacion("buscando");
+    obtenerUbicacion().then(aplicarUbicacion);
   }
 
   useEffect(() => {
-    solicitarUbicacion();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    obtenerUbicacion().then(aplicarUbicacion);
   }, []);
 
+  // Buscar: radios crecientes hasta tener unos cuantos resultados
   useEffect(() => {
-    if (!ubicacion || objetosMapa.length === 0) return;
-
+    if (!ubicacion || clave === null) return;
     let cancelado = false;
 
-    objetosMapa.forEach((objeto) => {
-      setResultados((actual) => ({
-        ...actual,
-        [objeto.tipoRaee]: { cargando: true, puntos: [], radioUsado: null, error: null },
-      }));
-
-      (async () => {
-        const MAX_INTENTOS = 15; // 15 × 10s = 2.5 min máximo esperando el cold start
-        for (let intento = 0; intento < MAX_INTENTOS; intento++) {
-          let fallo = false;
-          for (const radio of RADIOS_BUSQUEDA) {
-            try {
-              const resultado = await fetchPuntosCercanos({
-                lat: ubicacion.lat,
-                lng: ubicacion.lng,
-                radio,
-                tipo: objeto.tipoRaee,
-              });
-              if (cancelado) return;
-              if (resultado.length > 0 || radio === RADIOS_BUSQUEDA[RADIOS_BUSQUEDA.length - 1]) {
-                setResultados((actual) => ({
-                  ...actual,
-                  [objeto.tipoRaee]: {
-                    cargando: false,
-                    puntos: resultado,
-                    radioUsado: radio,
-                    error: null,
-                  },
-                }));
-                if (resultado.length > 0) {
-                  setElegidos((actual) =>
-                    actual[objeto.tipoRaee] ? actual : { ...actual, [objeto.tipoRaee]: resultado[0].id }
-                  );
-                }
-                return;
-              }
-            } catch {
-              if (cancelado) return;
-              fallo = true;
-              break;
-            }
-          }
-          if (fallo && intento < MAX_INTENTOS - 1) {
-            await new Promise((r) => setTimeout(r, 10000));
+    (async () => {
+      try {
+        const radios = distrito ? [60000] : RADIOS; // con distrito elegido no hace falta radio
+        for (const radio of radios) {
+          const resultado = await fetchPuntos({
+            lat: ubicacion.lat,
+            lng: ubicacion.lng,
+            radio,
+            tipo,
+            tiposPunto,
+            operador: operador || null,
+            distrito,
+            horario,
+            limite: 300,
+          });
+          if (cancelado) return;
+          if (resultado.length >= MIN_RESULTADOS || radio === radios[radios.length - 1]) {
+            setRespuesta({ clave, puntos: resultado, radio, error: false });
+            return;
           }
         }
-        if (!cancelado) {
-          setResultados((actual) => ({
-            ...actual,
-            [objeto.tipoRaee]: {
-              cargando: false,
-              puntos: [],
-              radioUsado: null,
-              error: "El servidor no respondió. Recarga la página para intentar de nuevo.",
-            },
-          }));
-        }
-      })();
-    });
+      } catch {
+        if (!cancelado) setRespuesta({ clave, puntos: [], radio: null, error: true });
+      }
+    })();
 
+    const timer = setTimeout(() => !cancelado && setDemoraClave(clave), SEGUNDOS_AVISO_DEMORA * 1000);
     return () => {
       cancelado = true;
+      clearTimeout(timer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ubicacion, parametroTipos]);
+  }, [clave, ubicacion, tipo, tiposPunto, operador, distrito, horario]);
 
-  // Mostrar aviso de demora si algún resultado lleva más de SEGUNDOS_AVISO_DEMORA cargando
-  const hayCargando = Object.values(resultados).some((r) => r.cargando);
-  useEffect(() => {
-    if (!hayCargando) { setDemorando(false); return; }
-    const timer = setTimeout(() => setDemorando(true), SEGUNDOS_AVISO_DEMORA * 1000);
-    return () => clearTimeout(timer);
-  }, [hayCargando]);
+  // Los puntos móviles solo están un día: por defecto se ocultan si hoy no vienen
+  const moviles_ocultos = puntos.filter((p) => p.tipo_punto === "punto_limpio_movil" && !p.abre_hoy).length;
+  const visibles = useMemo(
+    () => (mostrarOtrosDias ? puntos : puntos.filter((p) => p.tipo_punto !== "punto_limpio_movil" || p.abre_hoy)),
+    [puntos, mostrarOtrosDias]
+  );
 
-  const puntosPorId = new Map<number, PuntoCercano>();
-  const puntoAObjetoIds = new Map<number, string[]>(); // lista de categorías por punto
-  objetosMapa.forEach((o) => {
-    resultados[o.tipoRaee]?.puntos.forEach((p) => {
-      puntosPorId.set(p.id, p);
-      const existentes = puntoAObjetoIds.get(p.id) ?? [];
-      if (!existentes.includes(o.id)) puntoAObjetoIds.set(p.id, [...existentes, o.id]);
-    });
-  });
-  const todosLosPuntos = Array.from(puntosPorId.values());
-  const idsElegidos = Array.from(new Set(Object.values(elegidos)));
-
-  const destinosRuta = objetosMapa
-    .map((o) => {
-      const idElegido = elegidos[o.tipoRaee];
-      return resultados[o.tipoRaee]?.puntos.find((p) => p.id === idElegido);
-    })
-    .filter((p): p is PuntoCercano => Boolean(p))
-    .filter((p, indice, arr) => arr.findIndex((otro) => otro.id === p.id) === indice)
-    .sort((a, b) => a.distancia_metros - b.distancia_metros);
-
-  const urlRuta = ubicacion && destinosRuta.length > 0
-    ? construirUrlRutaGoogleMaps(ubicacion, destinosRuta)
-    : null;
-
-  const etiquetaTitulo = objetos.map((o) => o.etiqueta).join(" + ") || "objeto";
-  const grupos = agruparPorResultado(objetosMapa, resultados);
-
-  function claveGrupo(grupo: GrupoSeccion) {
-    return grupo.objetos.map((o) => o.id).join("+");
+  function elegirPunto(id: number) {
+    setElegidoId(id);
+    const indice = visibles.findIndex((p) => p.id === id);
+    if (indice >= mostrados) setMostrados(indice + 1);
+    requestAnimationFrame(() =>
+      refsTarjetas.current.get(id)?.scrollIntoView({ behavior: "smooth", block: "nearest" })
+    );
+    postEvento({
+      tipo: "seleccion_punto",
+      punto_id: id,
+      tipo_dispositivo: tipo ?? undefined,
+      session_id: obtenerSessionId(),
+    }).catch(() => {});
   }
 
-  function elegirPuntoEnGrupo(grupo: GrupoSeccion, puntoId: number) {
-    setElegidos((actual) => {
-      const nuevo = { ...actual };
-      grupo.objetos.forEach((o) => {
-        nuevo[o.tipoRaee] = puntoId;
-      });
-      return nuevo;
-    });
-    // Colapsar automáticamente para que el usuario vea las demás categorías
-    setGruposColapsados((actual) => new Set([...actual, claveGrupo(grupo)]));
-
-    // Analítica: qué puntos selecciona la gente y para qué categoría
-    const sessionId = obtenerSessionId();
-    grupo.objetos.forEach((o) => {
-      postEvento({ tipo: "seleccion_punto", punto_id: puntoId, tipo_raee: o.tipoRaee, session_id: sessionId }).catch(() => {});
+  function alternarTipoPunto(tp: TipoPunto) {
+    setTiposPunto((actual) => {
+      const nuevo = actual.includes(tp) ? actual.filter((x) => x !== tp) : [...actual, tp];
+      return nuevo.length ? nuevo : actual; // al menos uno
     });
   }
 
-  function alternarColapso(grupo: GrupoSeccion) {
-    const clave = claveGrupo(grupo);
-    setGruposColapsados((actual) => {
-      const nuevo = new Set(actual);
-      if (nuevo.has(clave)) nuevo.delete(clave);
-      else nuevo.add(clave);
-      return nuevo;
-    });
+  const hayFiltros = horario !== null || operador !== "" || distrito !== null ||
+    tiposPunto.length !== (tipo ? TODOS_LOS_TIPOS : TIPOS_GENERALES).length;
+
+  function limpiarFiltros() {
+    setHorario(null);
+    setOperador("");
+    setDistrito(null);
+    setTiposPunto(tipo ? TODOS_LOS_TIPOS : TIPOS_GENERALES);
   }
+
+  const operadoresConPuntos = catalogo?.operadores ?? [];
 
   return (
-    <main className="flex flex-1 flex-col bg-gray-50">
-      <header className="flex items-center gap-3 border-b bg-white px-4 py-3">
-        <Link href="/" className="text-sm text-gray-500 hover:text-gray-800">
-          ← Cambiar
-        </Link>
-        <h1 className="text-sm font-semibold text-gray-900">
-          Puntos para entregar: {etiquetaTitulo}
-        </h1>
-      </header>
+    <>
+      <Cabecera>
+        <p className="truncate text-sm font-semibold">
+          {dispositivo ? `${dispositivo.icono} ${nombreDispositivo(dispositivo, idioma)}` : t("mapa.todos")}
+        </p>
+      </Cabecera>
 
-      {estadoUbicacion === "denegada" && (
-        <div className="bg-amber-50 px-4 py-2 text-xs text-amber-800">
-          No pudimos acceder a tu ubicación — mostrando resultados desde Bogotá.{" "}
-          <button onClick={solicitarUbicacion} className="font-medium underline">
-            Reintentar
-          </button>
-        </div>
-      )}
-      {estadoUbicacion === "no-disponible" && (
-        <div className="bg-amber-50 px-4 py-2 text-xs text-amber-800">
-          Tu navegador no soporta geolocalización — mostrando resultados desde Bogotá.
-        </div>
-      )}
-      {modoReubicar && (
-        <div className="bg-emerald-50 px-4 py-2 text-xs text-emerald-800">
-          Toca un punto del mapa para buscar desde esa ubicación.{" "}
-          <button onClick={() => setModoReubicar(false)} className="font-medium underline">
-            Cancelar
-          </button>
-        </div>
-      )}
-
-      <div className="flex flex-1 flex-col md:flex-row">
-        <section className="order-2 flex-1 overflow-y-auto p-4 md:order-1 md:max-w-sm">
-          <div className="mb-3 flex items-center justify-between">
-            {estadoUbicacion === "buscando" ? (
-              <p className="text-sm text-gray-500">Buscando tu ubicación…</p>
-            ) : (
-              <span />
-            )}
+      <main className="flex flex-1 flex-col">
+        {/* Barra de filtros rápidos */}
+        <div className="flex items-center gap-2 overflow-x-auto border-b border-borde bg-superficie px-4 py-2 text-sm">
+          <Link href="/" className="shrink-0 rounded-full border border-borde px-3 py-1 text-texto-suave hover:border-marca">
+            ← {t(tipo ? "mapa.cambiar" : "mapa.elegirAparato")}
+          </Link>
+          {(["ahora", "hoy"] as const).map((h) => (
             <button
-              onClick={() => setModoReubicar((m) => !m)}
-              className="rounded-full bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white underline decoration-2 underline-offset-2 shadow hover:bg-emerald-700"
+              key={h}
+              onClick={() => setHorario(horario === h ? null : h)}
+              aria-pressed={horario === h}
+              className={`shrink-0 rounded-full border px-3 py-1 ${
+                horario === h ? "border-marca bg-marca text-sobre-marca" : "border-borde hover:border-marca"
+              }`}
             >
-              📍 Buscar desde otro punto
+              {t(h === "ahora" ? "filtros.ahora" : "filtros.hoy")}
+            </button>
+          ))}
+          <button
+            onClick={() => setPanelFiltros((v) => !v)}
+            aria-expanded={panelFiltros}
+            className={`shrink-0 rounded-full border px-3 py-1 ${
+              hayFiltros ? "border-acento text-acento" : "border-borde hover:border-acento"
+            }`}
+          >
+            ⚙ {t("filtros.titulo")}
+          </button>
+          {hayFiltros && (
+            <button onClick={limpiarFiltros} className="shrink-0 px-1 text-xs text-texto-suave underline">
+              {t("filtros.limpiar")}
+            </button>
+          )}
+        </div>
+
+        {panelFiltros && (
+          <div className="grid gap-4 border-b border-borde bg-superficie px-4 py-3 text-sm sm:grid-cols-3">
+            <fieldset>
+              <legend className="mb-1.5 font-semibold">{t("filtros.tipoPunto")}</legend>
+              <div className="flex flex-wrap gap-1.5">
+                {TODOS_LOS_TIPOS.map((tp) => (
+                  <button
+                    key={tp}
+                    onClick={() => alternarTipoPunto(tp)}
+                    aria-pressed={tiposPunto.includes(tp)}
+                    className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
+                      tiposPunto.includes(tp) ? "border-texto-suave bg-superficie-2" : "border-borde text-texto-suave opacity-60"
+                    }`}
+                  >
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: COLOR_TIPO_PUNTO[tp] }} />
+                    {t(`tp.${tp}` as const)}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+            <label className="flex flex-col gap-1.5">
+              <span className="font-semibold">{t("filtros.operador")}</span>
+              <select
+                value={operador}
+                onChange={(e) => setOperador(e.target.value)}
+                className="rounded-lg border border-borde bg-superficie px-2 py-1.5"
+              >
+                <option value="">{t("filtros.todos")}</option>
+                {operadoresConPuntos.map((o) => (
+                  <option key={o.slug} value={o.slug}>
+                    {o.nombre}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <span className="font-semibold">{t("filtros.distrito")}</span>
+              <select
+                value={distrito ?? ""}
+                onChange={(e) => setDistrito(e.target.value ? Number(e.target.value) : null)}
+                className="rounded-lg border border-borde bg-superficie px-2 py-1.5"
+              >
+                <option value="">{t("filtros.todos")}</option>
+                {(catalogo?.distritos ?? []).map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.nombre}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
+
+        {/* Avisos */}
+        {estadoUbicacion === "sin-permiso" && (
+          <div className="bg-aviso-suave px-4 py-2 text-xs text-aviso">
+            {t("mapa.sinUbicacion")}{" "}
+            <button onClick={pedirUbicacion} className="font-semibold underline">
+              {t("mapa.reintentar")}
             </button>
           </div>
-
-          {objetosMapa.length > 1 && (
-            <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 rounded-lg bg-white px-3 py-2 text-xs shadow-sm border border-gray-100">
-              {objetosMapa.map((o) => (
-                <div key={o.id} className="flex items-center gap-1.5">
-                  <span
-                    className="inline-block h-2.5 w-2.5 flex-shrink-0 rounded-full border border-white shadow-sm"
-                    style={{ background: COLORES_CATEGORIA[o.id] ?? "#6b7280" }}
-                  />
-                  <span className="text-gray-600">{o.icono} {o.etiqueta}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="flex flex-col gap-3">
-            {objetosContacto.map((objeto) => (
-              <TarjetaContacto
-                key={objeto.id}
-                etiqueta={objeto.etiqueta}
-                icono={objeto.icono}
-                contacto={objeto.contacto!}
-              />
-            ))}
-
-            {grupos.map((grupo) => {
-              const resultado = grupo.resultado;
-              const etiqueta = grupo.objetos.map((o) => o.etiqueta).join(" + ");
-              const iconos = grupo.objetos.map((o) => o.icono).join(" ");
-              const idElegidoGrupo = elegidos[grupo.objetos[0].tipoRaee];
-              const clave = claveGrupo(grupo);
-              const colapsado = gruposColapsados.has(clave);
-              const puntoElegido = resultado?.puntos.find((p) => p.id === idElegidoGrupo);
-
-              return (
-                <div key={clave} className="rounded-lg border border-gray-100">
-                  {/* Cabecera siempre visible — toca para colapsar/expandir */}
-                  <button
-                    onClick={() => alternarColapso(grupo)}
-                    className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left hover:bg-gray-50"
-                  >
-                    <span className="text-sm font-semibold text-gray-800">
-                      {iconos} {etiqueta}
-                    </span>
-                    <span className="text-gray-400">{colapsado ? "▾" : "▴"}</span>
-                  </button>
-
-                  {/* Resumen colapsado */}
-                  {colapsado && (
-                    <div className="px-3 pb-2 text-xs text-gray-600">
-                      {puntoElegido ? (
-                        <span className="font-medium text-emerald-700">
-                          ✓ {puntoElegido.nombre.split("–")[0].trim()}
-                        </span>
-                      ) : (
-                        <span className="text-gray-400">Sin punto seleccionado</span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Lista expandida */}
-                  {!colapsado && (
-                    <div className="px-3 pb-3">
-                      {!resultado || resultado.cargando ? (
-                        <p className="text-sm text-gray-500">
-                          {demorando
-                            ? "El servidor está despertando, un momento más…"
-                            : "Buscando…"}
-                        </p>
-                      ) : resultado.error ? (
-                        <p className="text-sm text-red-600">{resultado.error}</p>
-                      ) : resultado.puntos.length === 0 ? (
-                        <p className="text-sm text-gray-500">
-                          No encontramos puntos cercanos para {etiqueta.toLowerCase()}.
-                        </p>
-                      ) : (
-                        <>
-                          {resultado.radioUsado && resultado.radioUsado > RADIOS_BUSQUEDA[0] && (
-                            <p className="mb-1 text-xs text-gray-500">
-                              Ampliamos la búsqueda a {resultado.radioUsado / 1000} km.
-                            </p>
-                          )}
-                          <div className="flex flex-col gap-1.5">
-                            {resultado.puntos.slice(0, MAX_TARJETAS_POR_TIPO).map((p) => {
-                              const estaExpandido = puntoExpandido === p.id;
-                              const estaSeleccionado = idElegidoGrupo === p.id;
-                              return (
-                                <div
-                                  key={p.id}
-                                  className={`overflow-hidden rounded-lg border ${estaSeleccionado ? "border-emerald-400" : "border-gray-200"}`}
-                                >
-                                  {/* Fila compacta — toca para ver detalle */}
-                                  <button
-                                    onClick={() => setPuntoExpandido(estaExpandido ? null : p.id)}
-                                    className={`flex w-full items-center gap-2 px-3 py-2 text-left ${estaSeleccionado ? "bg-emerald-50" : "bg-white hover:bg-gray-50"}`}
-                                  >
-                                    <div className="min-w-0 flex-1">
-                                      <p className="truncate text-sm font-medium text-gray-900">{p.nombre}</p>
-                                      <p className="text-xs text-gray-500">
-                                        {formatDistancia(p.distancia_metros)} · 🚶 {minutosCaminando(p.distancia_metros)} min
-                                      </p>
-                                    </div>
-                                    <span className="text-xs text-gray-400">{estaExpandido ? "▴" : "▾"}</span>
-                                  </button>
-
-                                  {/* Detalle expandido */}
-                                  {estaExpandido && (
-                                    <div className="border-t border-gray-100 bg-gray-50 px-3 py-2">
-                                      <p className="text-xs text-gray-500">{p.ciudad ?? "Ciudad no especificada"} · {p.sistema}</p>
-                                      <p className="mt-0.5 text-xs text-gray-500">
-                                        {COLOR_CONFIANZA[nivelConfianza(p.ultima_verificacion)]} {textoConfianza(p.ultima_verificacion)}
-                                      </p>
-                                      {!estaSeleccionado && (
-                                        <p className="mt-2 text-xs text-gray-400">
-                                          📍 Tócalo en el mapa para elegirlo como tu punto.
-                                        </p>
-                                      )}
-                                      <Link
-                                        href={`/punto/${p.id}`}
-                                        className="mt-2 inline-block text-sm text-emerald-700 underline"
-                                      >
-                                        Ver más →
-                                      </Link>
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+        )}
+        {modoReubicar && (
+          <div className="bg-acento-suave px-4 py-2 text-xs text-acento">
+            {t("mapa.tocaElMapa")}{" "}
+            <button onClick={() => setModoReubicar(false)} className="font-semibold underline">
+              {t("mapa.cancelar")}
+            </button>
           </div>
+        )}
 
-          {urlRuta && (
-            <a
-              href={urlRuta}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => {
-                const sessionId = obtenerSessionId();
-                destinosRuta.forEach((p) => {
-                  agregarCheckinPendiente({
-                    puntoId: p.id,
-                    nombrePunto: p.nombre,
-                    sistema: p.sistema,
-                    categoriaIds: puntoAObjetoIds.get(p.id) ?? [],
-                  });
-                  postEvento({ tipo: "intencion_descarte", punto_id: p.id, session_id: sessionId }).catch(() => {});
-                  programarRecordatorioPush(p.id, p.nombre);
-                });
-              }}
-              className="mt-4 block w-full rounded-xl bg-emerald-600 px-4 py-3 text-center text-base font-semibold text-white shadow hover:bg-emerald-700"
-            >
-              {destinosRuta.length > 1
-                ? `Planear ruta (${destinosRuta.length} paradas)`
-                : "Cómo llegar"}
-            </a>
-          )}
-        </section>
+        <div className="flex flex-1 flex-col md:flex-row">
+          <section className="h-[42vh] md:order-2 md:h-auto md:flex-1">
+            {ubicacion ? (
+              <MapaPuntos
+                puntos={visibles}
+                ubicacion={ubicacion}
+                elegidoId={elegidoId}
+                modoSeleccionUbicacion={modoReubicar}
+                onElegirUbicacion={(lat, lng) => {
+                  setUbicacion({ lat, lng });
+                  setEstadoUbicacion("manual");
+                  setModoReubicar(false);
+                  setElegidoId(null);
+                }}
+                onElegirPunto={elegirPunto}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-texto-suave">
+                {t("mapa.buscandoUbicacion")}
+              </div>
+            )}
+          </section>
 
-        <section className="order-1 h-[50vh] md:order-2 md:h-auto md:flex-1">
-          {ubicacion && (
-            <MapaPuntos
-              puntos={todosLosPuntos}
-              ubicacion={ubicacion}
-              puntosElegidosIds={idsElegidos}
-              puntoAObjetoIds={puntoAObjetoIds}
-              categoriasMostradas={objetosMapa}
-              modoSeleccionUbicacion={modoReubicar}
-              onElegirUbicacion={elegirUbicacionManual}
-              onSeleccionarPunto={(id) => {
-                const objeto = objetosMapa.find((o) =>
-                  resultados[o.tipoRaee]?.puntos.some((p) => p.id === id)
-                );
-                if (objeto) {
-                  const grupo = grupos.find((g) => g.objetos.includes(objeto));
-                  if (grupo) elegirPuntoEnGrupo(grupo, id);
-                }
-              }}
-            />
-          )}
-        </section>
-      </div>
-    </main>
+          <section className="flex-1 px-4 py-3 md:order-1 md:max-w-sm md:flex-none md:basis-96 md:overflow-y-auto">
+            {dispositivo?.guia_borrado && (
+              <div className="mb-3 rounded-xl border border-acento/40 bg-acento-suave p-3 text-sm">
+                <p className="font-semibold text-acento">🔒 {t("guia.aviso")}</p>
+                <p className="mt-1 text-texto-suave">
+                  {t("guia.avisoTexto", { aparato: nombreDispositivo(dispositivo, idioma).toLowerCase() })}
+                </p>
+                <Link
+                  href={`/guia/${dispositivo.guia_borrado}?tipo=${dispositivo.slug}`}
+                  className="mt-2 inline-block font-semibold text-acento underline"
+                >
+                  {t("guia.verGuia")} →
+                </Link>
+              </div>
+            )}
+
+            <div className="mb-2 flex items-center justify-between gap-2 text-xs text-texto-suave">
+              <span>
+                {!cargando && !error && t("mapa.resultados", { n: visibles.length })}
+                {!cargando && radioUsado && radioUsado > RADIOS[0] && !distrito && (
+                  <> · {t("mapa.ampliado", { km: radioUsado / 1000 })}</>
+                )}
+              </span>
+              <button
+                onClick={() => setModoReubicar((m) => !m)}
+                className="shrink-0 rounded-full border border-acento px-2.5 py-1 font-semibold text-acento"
+              >
+                📍 {t("mapa.desdeOtroSitio")}
+              </button>
+            </div>
+
+            {cargando && (
+              <p className="py-6 text-sm text-texto-suave">{demorando ? t("mapa.despertando") : t("mapa.cargando")}</p>
+            )}
+            {error && <p className="py-6 text-sm text-peligro">{t("mapa.error")}</p>}
+            {!cargando && !error && visibles.length === 0 && (
+              <p className="py-6 text-sm text-texto-suave">{t("mapa.ninguno")}</p>
+            )}
+
+            {!cargando && !error && (
+              <ul className="flex flex-col gap-2">
+                {visibles.slice(0, mostrados).map((p) => (
+                  <TarjetaPunto
+                    key={p.id}
+                    punto={p}
+                    elegido={p.id === elegidoId}
+                    tipoElegido={tipo}
+                    onElegir={() => elegirPunto(p.id)}
+                    refLi={(el) => {
+                      if (el) refsTarjetas.current.set(p.id, el);
+                      else refsTarjetas.current.delete(p.id);
+                    }}
+                  />
+                ))}
+              </ul>
+            )}
+
+            {!cargando && visibles.length > mostrados && (
+              <button
+                onClick={() => setMostrados(mostrados + TAMANO_PAGINA)}
+                className="mt-3 w-full rounded-xl border border-borde py-2 text-sm font-semibold hover:border-marca"
+              >
+                {t("mapa.verMas", { n: Math.min(TAMANO_PAGINA, visibles.length - mostrados) })}
+              </button>
+            )}
+
+            {!cargando && moviles_ocultos > 0 && (
+              <label className="mt-3 flex items-center gap-2 text-xs text-texto-suave">
+                <input
+                  type="checkbox"
+                  checked={mostrarOtrosDias}
+                  onChange={(e) => setMostrarOtrosDias(e.target.checked)}
+                />
+                {t("mapa.mostrarOtrosDias")} ({moviles_ocultos})
+              </label>
+            )}
+
+            <p className="mt-6 text-[11px] text-texto-suave">{t("pie.datos")}</p>
+          </section>
+        </div>
+      </main>
+    </>
+  );
+}
+
+function TarjetaPunto({
+  punto,
+  elegido,
+  tipoElegido,
+  onElegir,
+  refLi,
+}: {
+  punto: Punto;
+  elegido: boolean;
+  tipoElegido: string | null;
+  onElegir: () => void;
+  refLi: (el: HTMLLIElement | null) => void;
+}) {
+  const { t } = useIdioma();
+  const operador = punto.sponsor_nombre
+    ? t("punto.patrocinadoPor", { nombre: punto.sponsor_nombre })
+    : punto.operador_nombre
+      ? t("punto.gestionadoPor", { nombre: punto.operador_nombre })
+      : null;
+
+  return (
+    <li
+      ref={refLi}
+      className={`rounded-xl border bg-superficie p-3 transition ${
+        elegido ? "border-marca ring-2 ring-marca/25" : "border-borde"
+      }`}
+    >
+      <button onClick={onElegir} className="block w-full text-left">
+        <div className="flex items-start gap-2">
+          <span
+            className="mt-1.5 h-2.5 w-2.5 flex-shrink-0 rounded-full"
+            style={{ background: COLOR_TIPO_PUNTO[punto.tipo_punto] }}
+          />
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold leading-snug">{punto.nombre}</p>
+            <p className="text-xs text-texto-suave">
+              {t(`tp.${punto.tipo_punto}` as const)}
+              {punto.distrito ? ` · ${punto.distrito}` : ""}
+            </p>
+            {punto.direccion && <p className="mt-0.5 text-sm">{punto.direccion}</p>}
+            <p className="mt-1 text-xs">
+              <EstadoHoy punto={punto} />
+            </p>
+            {punto.distancia_metros != null && (
+              <p className="mt-0.5 text-xs text-texto-suave">
+                {t("punto.distancia", {
+                  dist: formatDistancia(punto.distancia_metros),
+                  min: minutosCaminando(punto.distancia_metros),
+                })}
+              </p>
+            )}
+            {operador && <p className="mt-0.5 text-xs text-texto-suave">{operador}</p>}
+          </div>
+        </div>
+      </button>
+      {elegido && (
+        <div className="mt-3 flex gap-2">
+          <a
+            href={urlComoLlegar(punto.lat, punto.lng)}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => registrarIntencion(punto, tipoElegido)}
+            className="flex-1 rounded-lg bg-marca px-3 py-2 text-center text-sm font-semibold text-sobre-marca hover:bg-marca-fuerte"
+          >
+            {t("punto.comoLlegar")}
+          </a>
+          <Link
+            href={`/punto/${punto.id}${tipoElegido ? `?tipo=${tipoElegido}` : ""}`}
+            className="flex-1 rounded-lg border border-borde px-3 py-2 text-center text-sm font-semibold hover:border-marca"
+          >
+            {t("punto.verDetalle")}
+          </Link>
+        </div>
+      )}
+    </li>
   );
 }
