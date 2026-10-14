@@ -91,6 +91,9 @@ La web usa `NEXT_PUBLIC_API_URL` (por defecto `http://localhost:8000`). Para cam
 
 ## Despliegue
 
+En producción: web **https://galapa-go-rust.vercel.app** · API **https://galapago-api.onrender.com** (`/docs` para la documentación). Ambos se redesplegan solos con cada push a `main`.
+
+
 - **API (Render):** servicio nuevo, *Root directory* `api`, build `pip install -r requirements.txt`, start `uvicorn main:app --host 0.0.0.0 --port $PORT`. Variables: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `CORS_ORIGINS` (URL de la web). Opcional para push: `VAPID_PRIVATE_KEY`, `VAPID_CLAIM_EMAIL`, `CRON_SECRET`.
 - **Web (Vercel):** proyecto nuevo, *Root directory* `web`. Variable: `NEXT_PUBLIC_API_URL` (URL de la API en Render). Opcional: `NEXT_PUBLIC_VAPID_PUBLIC_KEY`.
 - El envío programado de notificaciones push (cron) está apagado en esta fase.
